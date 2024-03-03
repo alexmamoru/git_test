@@ -129,6 +129,21 @@ class WebformCalendarReservations extends WebformCompositeBase {
     $element['#wrapper_attributes']['class'][] = 'js-form-wrapper';
     return $element;
   }
+  
+  /**
+   * Performs the after_build callback.
+   */
+  public static function afterBuildReservations(array $element, FormStateInterface $form_state) {
+    // Add #states targeting the specific element and table row.
+    preg_match('/^(.+)\[[^]]+]$/', $element['#name'], $match);
+    $composite_name = $match[1];
+    $element['#states']['invisible'] = [
+      [':input[name="' . $composite_name . '[service]"]' => ['empty' => TRUE]],
+      [':input[name="' . $composite_name . '[procedure]"]' => ['empty' => TRUE]],
+    ];
+    $element['#wrapper_attributes']['class'][] = 'js-form-wrapper';
+    return $element;
+  }
 
   public static function ajaxCallbackService (array &$form, FormStateInterface $form_state) {
     $triggering_element = $form_state->getTriggeringElement();
