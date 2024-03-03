@@ -1,4 +1,197 @@
-1 commit
-2 commit
-3 commit
-4 commit
+<?php
+
+namespace Drupal\stratis_booking\Element;
+
+use Drupal\Component\Utility\NestedArray;
+use Drupal\Core\Form\FormStateInterface;
+use Drupal\webform\Element\WebformCompositeBase;
+
+/**
+ * Provides a webform element for an webform_calendar_reservations element.
+ *
+ * @FormElement("webform_calendar_reservations")
+ */
+class WebformCalendarReservations extends WebformCompositeBase {
+
+  /**
+   * {@inheritdoc}
+   */
+  public function getInfo() {
+    return parent::getInfo() + ['#theme' => 'webform_calendar_reservations'];
+  }
+
+  /**
+   * {@inheritdoc}
+   */
+  public static function getCompositeElements(array $element) {
+    $elements['service'] = [
+      '#type' => 'select',
+      '#title' => t('Service'),
+      '#options' =>  self::getServicesOptions($element['#service_category'] ?? NULL),
+    ];
+    $elements['procedure'] = [
+      '#type' => 'select',
+      '#title' => t('Procedure / Good'),
+      '#after_build' => [[get_called_class(), 'afterBuildProcedure']],
+    ];
+    $elements['reservations'] = [
+      '#type' => 'textarea',
+      '#title' => t('Reservations'),
+      '#attributes' => [
+        'class' => ['js-booking-slot-hidden', 'hidden'],
+      ],
+      '#after_build' => [[get_called_class(), 'afterBuildReservations']],
+    ];
+
+    return $elements;
+  }
+
+  /**
+   * Processes a composite webform element.
+   */
+  public static function processWebformComposite(&$element, FormStateInterface $form_state, &$complete_form) {
+    $element = parent::processWebformComposite($element, $form_state, $complete_form);
+    $element_wrapper_id = "ajax-wrapper-{$element['#id']}";
+    $element += [
+      '#prefix' => '<div id="' . $element_wrapper_id . '">',
+      '#suffix' => '</div>',
+    ];
+
+    $ajax = [
+      'event' => 'change',
+      'callback' => [self::class, 'ajaxCallbackService'],
+      'method' => 'replace',
+      'wrapper' => $element_wrapper_id,
+      'effect' => 'fade',
+    ];
+
+    $sid = $element['#value']['service'] ?? NULL;
+    $pid = $element['#value']['procedure'] ?? NULL;
+
+    if ($sid && $pid) {
+      $availible_slots = \Drupal::service('stratis_booking')->getDataAvailableReservations($sid, $pid);
+      $element['#availible_slots'] = $availible_slots;
+      $element['#ga_calendar'] = [
+        '#theme' => 'ga_calendar',
+        '#date' => array_key_first($availible_slots),
+        '#service_id' => $sid,
+        '#provider_id' => $pid,
+        '#service_entity' => \Drupal::entityTypeManager()->getStorage('booking_service')->load($sid),
+        '#provider_entity' => \Drupal::entityTypeManager()->getStorage('booking_procedure')->load($pid),
+        '#availible_slots' => $availible_slots,
+        '#attached' => [
+          'library' => [
+            'stratis_booking/stratis_booking_calendar',
+          ],
+        ],
+      ];
+    }
+
+    $element['service']['#ajax'] = $ajax;
+    $element['procedure']['#ajax'] = $ajax;
+
+    $element['#wrapper_attributes']['class'][] = 'webform-booking-calendar';
+    return $element;
+  }
+
+  /**
+   * Performs the after_build callback.
+   */
+  public static function afterBuildProcedure(array $element, FormStateInterface $form_state) {
+    preg_match('/^(.+)\[[^]]+]$/', $element['#name'], $match);
+    $composite_name = $match[1];
+    $element['#states']['disabled'] = [
+      [':input[name="' . $composite_name . '[service]"]' => ['empty' => TRUE]],
+    ];
+
+    $values = $form_state->getValues();
+    $parents = array_merge(array_slice($element['#parents'], 0, -1), array('service'));
+    $service_value = NestedArray::getValue($values, $parents);
+
+    $element['#options'] = ['' => $element['#placeholder'] ?? ''] + self::getProceduresOptions($service_value);
+
+    $element['#wrapper_attributes']['class'][] = 'js-form-wrapper';
+
+    return $element;
+  }
+
+  /**
+   * Performs the after_build callback.
+   */
+  public static function afterBuildReservations(array $element, FormStateInterface $form_state) {
+    // Add #states targeting the specific element and table row.
+    preg_match('/^(.+)\[[^]]+]$/', $element['#name'], $match);
+    $composite_name = $match[1];
+    $element['#states']['invisible'] = [
+      [':input[name="' . $composite_name . '[service]"]' => ['empty' => TRUE]],
+      [':input[name="' . $composite_name . '[procedure]"]' => ['empty' => TRUE]],
+    ];
+    $element['#wrapper_attributes']['class'][] = 'js-form-wrapper';
+    return $element;
+  }
+
+  public static function ajaxCallbackService (array &$form, FormStateInterface $form_state) {
+    $triggering_element = $form_state->getTriggeringElement();
+    return NestedArray::getValue($form, array_slice($triggering_element['#array_parents'], 0, -1));
+  }
+
+  public static function getServicesOptions(int|null $service_category): array {
+    $options = [];
+    $booking_services = \Drupal::entityTypeManager()->getStorage('booking_service');
+    if ($service_category) {
+      $booking_services = $booking_services->loadByProperties(['field_categories' => $service_category]);
+    }
+    else {
+      $booking_services = $booking_services->loadMultiple();
+    }
+    foreach ($booking_services as $service) {
+      $options[$service->id()] = $service->label();
+    }
+
+    return $options;
+  }
+
+  public static function getProceduresOptions($sid): array {
+    $options = [];
+    if (empty($sid)) {
+      return  $options;
+    }
+    $booking_services = \Drupal::entityTypeManager()->getStorage('booking_procedure')->loadByProperties([
+      'booking_services' => $sid,
+    ]);
+    foreach ($booking_services as $service) {
+      $options[$service->id()] = $service->label();
+    }
+
+    return $options;
+  }
+
+  /**
+   * {@inheritdoc}
+   */
+  public static function validateWebformComposite(&$element, FormStateInterface $form_state, &$complete_form) {
+    parent::validateWebformComposite($element, $form_state, $complete_form);
+    if ($element['#required']) {
+      if (empty($element['#value']['reservations'])) {
+        $form_state->setError($element, $element['reservations']['#title'] . ' - ' . t('Required'));
+      }
+    }
+  }
+
+  /**
+   * {@inheritdoc}
+   */
+  public static function preRenderWebformCompositeFormElement($element) {
+    $element = parent::preRenderWebformCompositeFormElement($element);
+    if ($element['#required']) {
+      $element['#required'] = FALSE;
+      $required_suffix = '<em class="required" aria-hidden="true">(' . t('Required') . ')</em>';
+      $element['service']['#title'] .= $required_suffix;
+      $element['procedure']['#title'] .= $required_suffix;
+      $element['reservations']['#title'] .= $required_suffix;
+    }
+
+    return $element;
+  }
+
+}
